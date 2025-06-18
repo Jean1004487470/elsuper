@@ -4,54 +4,66 @@ require_once '../includes/config.php';
 require_once '../includes/auth.php';
 
 // Verificar permisos
-verificarAcceso('eliminar_productos');
+verificarAcceso('eliminar_ventas');
 
 $db = getDBConnection();
 
 $message = '';
 $message_type = '';
 
-// Obtener el ID del producto de la URL
-$id = filter_var($_GET['id'] ?? '', FILTER_VALIDATE_INT);
+// Obtener el ID de la venta de la URL
+$id_venta = filter_var($_GET['id'] ?? '', FILTER_VALIDATE_INT);
 
-if (!$id) {
-    $message = 'Producto no especificado o inválido.';
+if (!$id_venta) {
+    $message = 'Venta no especificada o inválida.';
     $message_type = 'danger';
 } else {
+    $db->beginTransaction();
     try {
-        // Verificar si el producto tiene ventas asociadas
-        $stmt_check_sales = $db->prepare("SELECT COUNT(*) FROM detalles_venta WHERE producto_id = :id");
-        $stmt_check_sales->bindParam(':id', $id, PDO::PARAM_INT);
-        $stmt_check_sales->execute();
-        $sales_count = $stmt_check_sales->fetchColumn();
+        // Paso 1: Obtener los productos y cantidades de la venta a eliminar para revertir el stock
+        $stmt_detalles = $db->prepare("SELECT id_producto, cantidad FROM detalle_ventas WHERE id_venta = :id_venta");
+        $stmt_detalles->bindParam(':id_venta', $id_venta, PDO::PARAM_INT);
+        $stmt_detalles->execute();
+        $productos_en_venta = $stmt_detalles->fetchAll();
 
-        if ($sales_count > 0) {
-            $message = 'No se puede eliminar el producto porque tiene ventas asociadas.';
-            $message_type = 'warning';
-            registrarActividad('Intento fallido de eliminar producto', 'Producto ID: ' . $id . ' con ventas asociadas.', 'warning');
+        // Paso 2: Revertir el stock de cada producto
+        $stmt_update_stock = $db->prepare("UPDATE productos SET stock = stock + :cantidad WHERE id = :id_producto");
+        foreach ($productos_en_venta as $producto_venta) {
+            $stmt_update_stock->bindParam(':cantidad', $producto_venta['cantidad'], PDO::PARAM_INT);
+            $stmt_update_stock->bindParam(':id_producto', $producto_venta['id_producto'], PDO::PARAM_INT);
+            $stmt_update_stock->execute();
+        }
+
+        // Paso 3: Eliminar los detalles de la venta
+        $stmt_delete_detalles = $db->prepare("DELETE FROM detalle_ventas WHERE id_venta = :id_venta");
+        $stmt_delete_detalles->bindParam(':id_venta', $id_venta, PDO::PARAM_INT);
+        $stmt_delete_detalles->execute();
+
+        // Paso 4: Eliminar la venta principal
+        $stmt_delete_venta = $db->prepare("DELETE FROM ventas WHERE id = :id_venta");
+        $stmt_delete_venta->bindParam(':id_venta', $id_venta, PDO::PARAM_INT);
+        $stmt_delete_venta->execute();
+
+        if ($stmt_delete_venta->rowCount() > 0) {
+            $db->commit();
+            $message = 'Venta ID ' . $id_venta . ' eliminada exitosamente. Stock de productos revertido.';
+            $message_type = 'success';
+            registrarActividad('Venta eliminada', 'Venta ID: ' . $id_venta . '. Stock revertido.');
         } else {
-            // Si no tiene ventas asociadas, proceder con la eliminación
-            $stmt = $db->prepare("DELETE FROM productos WHERE id = :id");
-            $stmt->bindParam(':id', $id, PDO::PARAM_INT);
-
-            if ($stmt->execute()) {
-                if ($stmt->rowCount() > 0) {
-                    $message = 'Producto eliminado exitosamente.';
-                    $message_type = 'success';
-                    registrarActividad('Producto eliminado', 'Producto ID: ' . $id);
-                } else {
-                    $message = 'El producto no fue encontrado o ya ha sido eliminado.';
-                    $message_type = 'warning';
-                }
-            } else {
-                $message = 'Error al eliminar el producto.';
-                $message_type = 'danger';
-            }
+            $db->rollBack();
+            $message = 'La venta no fue encontrada o ya ha sido eliminada.';
+            $message_type = 'warning';
         }
     } catch (PDOException $e) {
-        $message = 'Error de base de datos: ' . $e->getMessage();
+        $db->rollBack();
+        $message = 'Error de base de datos al eliminar la venta: ' . $e->getMessage();
         $message_type = 'danger';
-        registrarActividad('Error al eliminar producto', 'Producto ID: ' . $id . ', Error: ' . $e->getMessage(), 'error');
+        registrarActividad('Error al eliminar venta', 'Venta ID: ' . $id_venta . ', Error: ' . $e->getMessage(), 'error');
+    } catch (Exception $e) {
+        $db->rollBack();
+        $message = 'Error inesperado al eliminar la venta: ' . $e->getMessage();
+        $message_type = 'danger';
+        registrarActividad('Error inesperado al eliminar venta', 'Venta ID: ' . $id_venta . ', Error: ' . $e->getMessage(), 'error');
     }
 }
 

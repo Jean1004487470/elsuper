@@ -4,7 +4,7 @@ require_once '../includes/config.php';
 require_once '../includes/auth.php';
 
 // Verificar permisos
-verificarAcceso('ver_productos');
+verificarAcceso('ver_ventas');
 
 $db = getDBConnection();
 
@@ -19,22 +19,34 @@ $search_query = '';
 $search_params = [];
 
 if (!empty($search)) {
-    $search_query = " WHERE (nombre LIKE :search OR descripcion LIKE :search)";
-    $search_params[':search'] = '%' . $search . '%';
+    $search_query = " WHERE (c.nombre LIKE :search_nombre OR c.apellido LIKE :search_apellido OR v.id LIKE :search_id)";
+    $search_params[':search_nombre'] = '%' . $search . '%';
+    $search_params[':search_apellido'] = '%' . $search . '%';
+    $search_params[':search_id'] = '%' . $search . '%';
 }
 
-// Obtener el total de productos para la paginación
-$stmt_total = $db->prepare("SELECT COUNT(*) as total FROM productos" . $search_query);
-$stmt_total->execute($search_params);
+// Obtener el total de ventas para la paginación
+$stmt_total = $db->prepare("
+    SELECT COUNT(*) as total
+    FROM ventas v
+    JOIN clientes c ON v.id_cliente = c.id
+    " . $search_query
+);
+
+foreach ($search_params as $key => &$val) {
+    $stmt_total->bindParam($key, $val, PDO::PARAM_STR);
+}
+$stmt_total->execute();
 $total_records = $stmt_total->fetch()['total'];
 $total_pages = ceil($total_records / $limit);
 
-// Obtener productos con paginación y búsqueda
+// Obtener ventas con paginación y búsqueda
 $stmt = $db->prepare("
-    SELECT id, nombre, descripcion, precio, stock, fecha_registro
-    FROM productos
+    SELECT v.id, c.nombre as cliente_nombre, c.apellido as cliente_apellido, v.fecha_venta, v.total
+    FROM ventas v
+    JOIN clientes c ON v.id_cliente = c.id
     " . $search_query . "
-    ORDER BY nombre ASC
+    ORDER BY v.fecha_venta DESC
     LIMIT :limit OFFSET :offset
 ");
 
@@ -44,7 +56,7 @@ foreach ($search_params as $key => &$val) {
 $stmt->bindParam(':limit', $limit, PDO::PARAM_INT);
 $stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
 $stmt->execute();
-$productos = $stmt->fetchAll();
+$ventas = $stmt->fetchAll();
 
 ?>
 <!DOCTYPE html>
@@ -52,7 +64,7 @@ $productos = $stmt->fetchAll();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestión de Productos - <?php echo APP_NAME; ?></title>
+    <title>Gestión de Ventas - <?php echo APP_NAME; ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
     <link href="../css/styles.css" rel="stylesheet">
@@ -67,11 +79,11 @@ $productos = $stmt->fetchAll();
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav">
                     <li class="nav-item">
-                        <a class="nav-link active" href="consulta.php">Productos</a>
+                        <a class="nav-link active" href="consulta.php">Ventas</a>
                     </li>
-                    <?php if (hasPermission('crear_productos')): ?>
+                    <?php if (hasPermission('crear_ventas')): ?>
                     <li class="nav-item">
-                        <a class="nav-link" href="crear.php">Nuevo Producto</a>
+                        <a class="nav-link" href="crear.php">Nueva Venta</a>
                     </li>
                     <?php endif; ?>
                 </ul>
@@ -80,13 +92,20 @@ $productos = $stmt->fetchAll();
     </nav>
 
     <div class="container my-4">
-        <h2 class="mb-4">Gestión de Productos</h2>
+        <h2 class="mb-4">Gestión de Ventas</h2>
+
+        <?php if (isset($_GET['message'])): ?>
+            <div class="alert alert-<?php echo htmlspecialchars($_GET['type']); ?> alert-dismissible fade show" role="alert">
+                <?php echo htmlspecialchars($_GET['message']); ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        <?php endif; ?>
 
         <div class="card mb-3">
             <div class="card-body">
                 <form method="GET" action="" class="row g-3 align-items-center">
                     <div class="col-md-8">
-                        <input type="text" class="form-control" name="search" placeholder="Buscar por nombre o descripción" value="<?php echo htmlspecialchars($search); ?>">
+                        <input type="text" class="form-control" name="search" placeholder="Buscar por cliente o ID de venta" value="<?php echo htmlspecialchars($search); ?>">
                     </div>
                     <div class="col-md-4">
                         <button type="submit" class="btn btn-primary"><i class="bi bi-search"></i> Buscar</button>
@@ -96,39 +115,38 @@ $productos = $stmt->fetchAll();
             </div>
         </div>
 
-        <?php if (empty($productos)): ?>
-            <div class="alert alert-info">No se encontraron productos.</div>
+        <?php if (empty($ventas)): ?>
+            <div class="alert alert-info">No se encontraron ventas.</div>
         <?php else: ?>
             <div class="table-responsive">
                 <table class="table table-hover table-striped border">
                     <thead class="table-primary">
                         <tr>
-                            <th>ID</th>
-                            <th>Nombre</th>
-                            <th>Descripción</th>
-                            <th>Precio</th>
-                            <th>Stock</th>
-                            <th>Fecha Registro</th>
+                            <th>ID Venta</th>
+                            <th>Cliente</th>
+                            <th>Fecha Venta</th>
+                            <th>Total</th>
                             <th>Acciones</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($productos as $producto): ?>
+                        <?php foreach ($ventas as $venta): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($producto['id']); ?></td>
-                            <td><?php echo htmlspecialchars($producto['nombre']); ?></td>
-                            <td><?php echo htmlspecialchars($producto['descripcion'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars(number_format($producto['precio'], 2)); ?></td>
-                            <td><?php echo htmlspecialchars($producto['stock']); ?></td>
-                            <td><?php echo htmlspecialchars(date('d/m/Y H:i', strtotime($producto['fecha_registro']))); ?></td>
+                            <td><?php echo htmlspecialchars($venta['id']); ?></td>
+                            <td><?php echo htmlspecialchars($venta['cliente_nombre'] . ' ' . $venta['cliente_apellido']); ?></td>
+                            <td><?php echo htmlspecialchars(date('d/m/Y H:i', strtotime($venta['fecha_venta']))); ?></td>
+                            <td><?php echo htmlspecialchars(number_format($venta['total'], 2)); ?></td>
                             <td>
-                                <?php if (hasPermission('editar_productos')): ?>
-                                <a href="editar.php?id=<?php echo $producto['id']; ?>" class="btn btn-sm btn-warning me-1" title="Editar">
+                                <a href="detalle.php?id=<?php echo $venta['id']; ?>" class="btn btn-sm btn-info me-1" title="Ver Detalles">
+                                    <i class="bi bi-eye"></i>
+                                </a>
+                                <?php if (hasPermission('editar_ventas')): ?>
+                                <a href="editar.php?id=<?php echo $venta['id']; ?>" class="btn btn-sm btn-warning me-1" title="Editar">
                                     <i class="bi bi-pencil"></i>
                                 </a>
                                 <?php endif; ?>
-                                <?php if (hasPermission('eliminar_productos')): ?>
-                                <button type="button" class="btn btn-sm btn-danger" title="Eliminar" data-bs-toggle="modal" data-bs-target="#confirmDeleteModal" data-id="<?php echo $producto['id']; ?>" data-nombre="<?php echo htmlspecialchars($producto['nombre']); ?>">
+                                <?php if (hasPermission('eliminar_ventas')): ?>
+                                <button type="button" class="btn btn-sm btn-danger" title="Eliminar" data-bs-toggle="modal" data-bs-target="#confirmDeleteModal" data-id="<?php echo $venta['id']; ?>" data-cliente="<?php echo htmlspecialchars($venta['cliente_nombre'] . ' ' . $venta['cliente_apellido']); ?>">
                                     <i class="bi bi-trash"></i>
                                 </button>
                                 <?php endif; ?>
@@ -161,12 +179,12 @@ $productos = $stmt->fetchAll();
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header bg-danger text-white">
-                    <h5 class="modal-title" id="confirmDeleteModalLabel">Confirmar Eliminación</h5>
+                    <h5 class="modal-title" id="confirmDeleteModalLabel">Confirmar Eliminación de Venta</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    ¿Está seguro de que desea eliminar el producto <strong id="productoNombre"></strong>?
-                    Esta acción es irreversible y podría afectar registros de inventario o ventas asociadas.
+                    ¿Está seguro de que desea eliminar la venta <strong id="ventaId"></strong> del cliente <strong id="clienteNombre"></strong>?
+                    Esta acción es irreversible y afectará el inventario asociado.
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
@@ -181,14 +199,16 @@ $productos = $stmt->fetchAll();
         var confirmDeleteModal = document.getElementById('confirmDeleteModal');
         confirmDeleteModal.addEventListener('show.bs.modal', function (event) {
             var button = event.relatedTarget;
-            var productoId = button.getAttribute('data-id');
-            var productoNombre = button.getAttribute('data-nombre');
+            var ventaId = button.getAttribute('data-id');
+            var clienteNombre = button.getAttribute('data-cliente');
 
-            var modalBodyProductoNombre = confirmDeleteModal.querySelector('#productoNombre');
+            var modalBodyVentaId = confirmDeleteModal.querySelector('#ventaId');
+            var modalBodyClienteNombre = confirmDeleteModal.querySelector('#clienteNombre');
             var confirmDeleteButton = confirmDeleteModal.querySelector('#confirmDeleteButton');
 
-            modalBodyProductoNombre.textContent = productoNombre;
-            confirmDeleteButton.href = 'eliminar.php?id=' + productoId;
+            modalBodyVentaId.textContent = ventaId;
+            modalBodyClienteNombre.textContent = clienteNombre;
+            confirmDeleteButton.href = 'eliminar.php?id=' + ventaId;
         });
     </script>
 </body>
