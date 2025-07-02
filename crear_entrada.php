@@ -1,0 +1,149 @@
+<?php
+define('SECURE_ACCESS', true);
+require_once '../includes/config.php';
+require_once '../includes/auth.php';
+
+// Verificar permisos
+verificarAcceso('registrar_entrada_inventario');
+
+$db = getDBConnection();
+
+$message = '';
+$message_type = '';
+
+// Obtener el ID del empleado logueado
+$id_empleado_responsable = null;
+if (isset($_SESSION['user_id'])) {
+    $stmt_empleado = $db->prepare("SELECT id FROM empleados WHERE id_usuario = :user_id");
+    $stmt_empleado->bindParam(':user_id', $_SESSION['user_id'], PDO::PARAM_INT);
+    $stmt_empleado->execute();
+    $id_empleado_responsable = $stmt_empleado->fetchColumn();
+}
+
+if (!$id_empleado_responsable) {
+    registrarActividad('Error en Inventario', 'No se pudo obtener id_empleado para user_id: ' . ($_SESSION['user_id'] ?? 'N/A'), 'error');
+    header('Location: consulta.php?message=Error: No se pudo identificar al empleado responsable.&type=danger');
+    exit();
+}
+
+// Obtener productos para el dropdown
+$productos = $db->query("SELECT id, nombre, stock FROM productos ORDER BY nombre ASC")->fetchAll();
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $id_producto = filter_var($_POST['id_producto'] ?? '', FILTER_VALIDATE_INT);
+    $cantidad = filter_var($_POST['cantidad'] ?? '', FILTER_VALIDATE_INT);
+
+    if (!$id_producto) {
+        $message = 'Por favor, seleccione un producto.';
+        $message_type = 'danger';
+    } elseif ($cantidad === false || $cantidad <= 0) {
+        $message = 'La cantidad debe ser un número entero positivo.';
+        $message_type = 'danger';
+    } else {
+        $db->beginTransaction();
+        try {
+            // Actualizar stock del producto
+            $stmt_update_stock = $db->prepare("UPDATE productos SET stock = stock + :cantidad WHERE id = :id_producto");
+            $stmt_update_stock->bindParam(':cantidad', $cantidad, PDO::PARAM_INT);
+            $stmt_update_stock->bindParam(':id_producto', $id_producto, PDO::PARAM_INT);
+            $stmt_update_stock->execute();
+
+            // Registrar movimiento de inventario
+            $stmt_movimiento = $db->prepare("
+                INSERT INTO inventario (id_producto, tipo_movimiento, cantidad, id_empleado_responsable, fecha_movimiento)
+                VALUES (:id_producto, 'ENTRADA', :cantidad, :id_empleado_responsable, NOW())
+            ");
+            $stmt_movimiento->bindParam(':id_producto', $id_producto, PDO::PARAM_INT);
+            $stmt_movimiento->bindParam(':cantidad', $cantidad, PDO::PARAM_INT);
+            $stmt_movimiento->bindParam(':id_empleado_responsable', $id_empleado_responsable, PDO::PARAM_INT);
+            $stmt_movimiento->execute();
+
+            $db->commit();
+            $message = 'Entrada de inventario registrada exitosamente.';
+            $message_type = 'success';
+            registrarActividad('Entrada de Inventario', 'Producto ID: ' . $id_producto . ', Cantidad: ' . $cantidad);
+            // Limpiar campos
+            $_POST = [];
+        } catch (PDOException $e) {
+            $db->rollBack();
+            $message = 'Error de base de datos: ' . $e->getMessage();
+            $message_type = 'danger';
+            registrarActividad('Error al registrar entrada de inventario', 'Error: ' . $e->getMessage(), 'error');
+        }
+    }
+}
+
+?>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registrar Entrada de Inventario - <?php echo APP_NAME; ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="../css/styles.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="../index.php"><?php echo APP_NAME; ?></a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="consulta.php">Inventario</a>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle active" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            Movimiento
+                        </a>
+                        <ul class="dropdown-menu" aria-labelledby="navbarDropdown">
+                            <li><a class="dropdown-item" href="crear_entrada.php">Registrar Entrada</a></li>
+                            <li><a class="dropdown-item" href="crear_salida.php">Registrar Salida</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container my-4">
+        <h2 class="mb-4">Registrar Entrada de Inventario</h2>
+
+        <?php if (!empty($message)): ?>
+            <div class="alert alert-<?php echo $message_type; ?>" role="alert">
+                <?php echo $message; ?>
+            </div>
+        <?php endif; ?>
+
+        <div class="card">
+            <div class="card-body">
+                <form action="crear_entrada.php" method="POST">
+                    <div class="mb-3">
+                        <label for="id_producto" class="form-label">Producto <span class="text-danger">*</span></label>
+                        <select class="form-select" id="id_producto" name="id_producto" required>
+                            <option value="">Seleccione un producto</option>
+                            <?php foreach ($productos as $producto): ?>
+                                <option value="<?php echo htmlspecialchars($producto['id']); ?>">
+                                    <?php echo htmlspecialchars($producto['nombre'] . ' (Stock actual: ' . $producto['stock'] . ')'); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="cantidad" class="form-label">Cantidad de Entrada <span class="text-danger">*</span></label>
+                        <input type="number" class="form-control" id="cantidad" name="cantidad" min="1" value="<?php echo htmlspecialchars($_POST['cantidad'] ?? ''); ?>" required>
+                    </div>
+                    <button type="submit" class="btn btn-success"><i class="bi bi-box-arrow-in-right"></i> Registrar Entrada</button>
+                    <a href="consulta.php" class="btn btn-secondary ms-2"><i class="bi bi-arrow-left-circle"></i> Volver</a>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html> 

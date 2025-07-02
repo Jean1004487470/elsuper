@@ -4,70 +4,63 @@ require_once '../includes/config.php';
 require_once '../includes/auth.php';
 
 // Verificar permisos
-verificarAcceso('eliminar_ventas');
+verificarAcceso('eliminar_movimientos_inventario');
 
 $db = getDBConnection();
 
-$message = '';
-$message_type = '';
+$id = filter_var($_GET['id'] ?? '', FILTER_VALIDATE_INT);
 
-// Obtener el ID de la venta de la URL
-$id_venta = filter_var($_GET['id'] ?? '', FILTER_VALIDATE_INT);
-
-if (!$id_venta) {
-    $message = 'Venta no especificada o inválida.';
-    $message_type = 'danger';
-} else {
-    $db->beginTransaction();
-    try {
-        // Paso 1: Obtener los productos y cantidades de la venta a eliminar para revertir el stock
-        $stmt_detalles = $db->prepare("SELECT id_producto, cantidad FROM detalle_ventas WHERE id_venta = :id_venta");
-        $stmt_detalles->bindParam(':id_venta', $id_venta, PDO::PARAM_INT);
-        $stmt_detalles->execute();
-        $productos_en_venta = $stmt_detalles->fetchAll();
-
-        // Paso 2: Revertir el stock de cada producto
-        $stmt_update_stock = $db->prepare("UPDATE productos SET stock = stock + :cantidad WHERE id = :id_producto");
-        foreach ($productos_en_venta as $producto_venta) {
-            $stmt_update_stock->bindParam(':cantidad', $producto_venta['cantidad'], PDO::PARAM_INT);
-            $stmt_update_stock->bindParam(':id_producto', $producto_venta['id_producto'], PDO::PARAM_INT);
-            $stmt_update_stock->execute();
-        }
-
-        // Paso 3: Eliminar los detalles de la venta
-        $stmt_delete_detalles = $db->prepare("DELETE FROM detalle_ventas WHERE id_venta = :id_venta");
-        $stmt_delete_detalles->bindParam(':id_venta', $id_venta, PDO::PARAM_INT);
-        $stmt_delete_detalles->execute();
-
-        // Paso 4: Eliminar la venta principal
-        $stmt_delete_venta = $db->prepare("DELETE FROM ventas WHERE id = :id_venta");
-        $stmt_delete_venta->bindParam(':id_venta', $id_venta, PDO::PARAM_INT);
-        $stmt_delete_venta->execute();
-
-        if ($stmt_delete_venta->rowCount() > 0) {
-            $db->commit();
-            $message = 'Venta ID ' . $id_venta . ' eliminada exitosamente. Stock de productos revertido.';
-            $message_type = 'success';
-            registrarActividad('Venta eliminada', 'Venta ID: ' . $id_venta . '. Stock revertido.');
-        } else {
-            $db->rollBack();
-            $message = 'La venta no fue encontrada o ya ha sido eliminada.';
-            $message_type = 'warning';
-        }
-    } catch (PDOException $e) {
-        $db->rollBack();
-        $message = 'Error de base de datos al eliminar la venta: ' . $e->getMessage();
-        $message_type = 'danger';
-        registrarActividad('Error al eliminar venta', 'Venta ID: ' . $id_venta . ', Error: ' . $e->getMessage(), 'error');
-    } catch (Exception $e) {
-        $db->rollBack();
-        $message = 'Error inesperado al eliminar la venta: ' . $e->getMessage();
-        $message_type = 'danger';
-        registrarActividad('Error inesperado al eliminar venta', 'Venta ID: ' . $id_venta . ', Error: ' . $e->getMessage(), 'error');
-    }
+if (!$id) {
+    header('Location: consulta.php?message=ID de movimiento de inventario no válido.&type=danger');
+    exit();
 }
 
-// Redirigir a la página de consulta con el mensaje
-header('Location: consulta.php?message=' . urlencode($message) . '&type=' . urlencode($message_type));
-exit();
+$db->beginTransaction();
+try {
+    // 1. Obtener detalles del movimiento a eliminar
+    $stmt_movimiento = $db->prepare("SELECT id_producto, tipo_movimiento, cantidad FROM inventario WHERE id = :id");
+    $stmt_movimiento->bindParam(':id', $id, PDO::PARAM_INT);
+    $stmt_movimiento->execute();
+    $movimiento = $stmt_movimiento->fetch();
+
+    if (!$movimiento) {
+        throw new Exception('Movimiento de inventario no encontrado.');
+    }
+
+    $id_producto = $movimiento['id_producto'];
+    $tipo_movimiento = $movimiento['tipo_movimiento'];
+    $cantidad = $movimiento['cantidad'];
+
+    // 2. Revertir el impacto en el stock del producto
+    if ($tipo_movimiento == 'ENTRADA') {
+        // Si era una entrada, restar la cantidad del stock
+        $stmt_update_stock = $db->prepare("UPDATE productos SET stock = stock - :cantidad WHERE id = :id_producto");
+    } elseif ($tipo_movimiento == 'SALIDA') {
+        // Si era una salida, sumar la cantidad al stock
+        $stmt_update_stock = $db->prepare("UPDATE productos SET stock = stock + :cantidad WHERE id = :id_producto");
+    } else {
+        throw new Exception('Tipo de movimiento desconocido.');
+    }
+
+    $stmt_update_stock->bindParam(':cantidad', $cantidad, PDO::PARAM_INT);
+    $stmt_update_stock->bindParam(':id_producto', $id_producto, PDO::PARAM_INT);
+    $stmt_update_stock->execute();
+
+    // 3. Eliminar el registro del movimiento de inventario
+    $stmt_delete_movimiento = $db->prepare("DELETE FROM inventario WHERE id = :id");
+    $stmt_delete_movimiento->bindParam(':id', $id, PDO::PARAM_INT);
+    $stmt_delete_movimiento->execute();
+
+    $db->commit();
+    registrarActividad('Eliminación de Movimiento de Inventario', 'Movimiento ID: ' . $id . ', Producto ID: ' . $id_producto . ', Cantidad: ' . $cantidad . ', Tipo: ' . $tipo_movimiento . '. Stock revertido.');
+    header('Location: consulta.php?message=Movimiento de inventario eliminado y stock revertido exitosamente.&type=success');
+    exit();
+
+} catch (Exception $e) {
+    $db->rollBack();
+    registrarActividad('Error al eliminar movimiento de inventario', 'Movimiento ID: ' . $id . ', Error: ' . $e->getMessage(), 'error');
+    header('Location: consulta.php?message=Error al eliminar el movimiento de inventario: ' . urlencode($e->getMessage()) . '&type=danger');
+    exit();
+}
+
 ?> 
